@@ -1,0 +1,26 @@
+diff --git a/ArduinoFloppyReader/lib/ADFWriter.cpp b/ArduinoFloppyReader/lib/ADFWriter.cpp
+index 38b3cca..bd1bf86 100644
+--- a/ArduinoFloppyReader/lib/ADFWriter.cpp
++++ b/ArduinoFloppyReader/lib/ADFWriter.cpp
+@@ -875,9 +875,8 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
+ 		}
+ 
+ 		if (m_device.isDiskInDrive()) {
+-			messageOutput(true, "Disk change is NOT working correctly");
++			messageOutput(true, "Disk change is NOT working correctly (removal not detected) - CONTINUING ANYWAY");
+ 			messageOutput(true, "Please check the following pins on the Arduino: 10, 11");
+-			return false;
+ 		}
+ 
+ 		start = std::chrono::steady_clock::now();
+@@ -895,9 +894,8 @@ bool ADFWriter::runDiagnostics(const std::wstring& portName, std::function<void(
+ 			messageOutput(false, "Disk change is working correctly");
+ 		}
+ 		else {
+-			messageOutput(true, "Disk change is NOT working correctly");
++			messageOutput(true, "Disk change is NOT working correctly (re-insert not detected) - CONTINUING ANYWAY");
+ 			messageOutput(true, "Please check the following pins on the Arduino: 10, 11");
+-			return false;
+ 		}		
+ 
+ 	}

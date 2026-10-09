@@ -1,0 +1,16 @@
+diff --git a/ArduinoFloppyReader/lib/ADFWriter.cpp b/ArduinoFloppyReader/lib/ADFWriter.cpp
+index 38b3cca..bd1bf86 100644
+--- a/ArduinoFloppyReader/lib/ADFWriter.cpp
++++ b/ArduinoFloppyReader/lib/ADFWriter.cpp
+@@ -1506,8 +1504,8 @@ ADFResult ADFWriter::sectorFileToDisk(const std::wstring& inputFile, const bool
+ 				if (callback(cylinder, surface, false, failCount > 0 ? CallbackOperation::coRetryWriting : CallbackOperation::coWriting) == WriteResponse::wrAbort) return ADFResult::adfrAborted;
+ 
+ 			DiagnosticResponse resp;
+-			resp = m_device.writeCurrentTrackPrecomp((const unsigned char*)& mfmBuffer[0], totalBytesToWrite, true, (cylinder >= 40) && usePrecompMode);
+-			if (resp == DiagnosticResponse::drOldFirmware) resp = m_device.writeCurrentTrack((const unsigned char*)&mfmBuffer[0], totalBytesToWrite, true);
++			resp = m_device.writeCurrentTrackPrecomp((const unsigned char*)& mfmBuffer[0], totalBytesToWrite, false, (cylinder >= 40) && usePrecompMode);
++			if (resp == DiagnosticResponse::drOldFirmware) resp = m_device.writeCurrentTrack((const unsigned char*)&mfmBuffer[0], totalBytesToWrite, false);
+ 
+ 			switch (resp) {
+ 			case DiagnosticResponse::drWriteProtected: return ADFResult::adfrDiskWriteProtected;
+

@@ -1,0 +1,13 @@
+diff --git a/ArduinoFloppyReader/ArduinoFloppyReader/Main.cpp b/ArduinoFloppyReader/ArduinoFloppyReader/Main.cpp
+index 07d76f4..14963a4 100644
+--- a/ArduinoFloppyReader/ArduinoFloppyReader/Main.cpp
++++ b/ArduinoFloppyReader/ArduinoFloppyReader/Main.cpp
+@@ -302,7 +302,7 @@ void file2Disk(const std::wstring& filename, bool verify) {
+ 	}
+ 	case MODE_IMG:
+ 	case MODE_ST: {
+-		result = writer.sectorFileToDisk(filename, hdMode, verify, true, false, mode == MODE_ST, [](const int currentTrack, const DiskSurface currentSide, bool isVerifyError, const CallbackOperation operation) ->WriteResponse {
++		result = writer.sectorFileToDisk(filename, hdMode, verify, false, true, mode == MODE_ST, [](const int currentTrack, const DiskSurface currentSide, bool isVerifyError, const CallbackOperation operation) ->WriteResponse {
+ 			if (isVerifyError) {
+ 				char input;
+ 				do {

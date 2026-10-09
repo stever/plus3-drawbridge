@@ -1,0 +1,6 @@
+vendor/
+gwenv/
+*.scp
+*.img
+!examples/*
+__pycache__/
