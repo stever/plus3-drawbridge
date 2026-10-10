@@ -21,15 +21,25 @@ export DB=vendor/ArduinoFloppyDiskReader/ArduinoFloppyReader/ArduinoFloppyReader
 $DB /dev/ttyUSB0 SETTINGS ALLDD 1          # treat every disk as double density
 ```
 
-Format a 720K +3 disk (if the disk is high density, tape over the density hole on both sides first):
+Everyday use goes through one command (high-density disks: tape over the density hole on both sides first):
 
 ```
-tools/write-disk.sh plus3-blank-720k.img   # writes, verifies, reads back, compares byte for byte
+tools/plus3disk.py format                              # blank 720K +3DOS disk; --size 180 for the standard format
+tools/plus3disk.py ls                                  # catalogue
+tools/plus3disk.py put examples/hello.bas --basic --line 10 --as HELLO   # tokenise, add header, copy on
+tools/plus3disk.py put data.txt program.bin            # plain files, no header
+tools/plus3disk.py put game.bin --code --addr 32768    # CODE block with a +3DOS header
+tools/plus3disk.py get HELLO --to out/                 # copy off
+tools/plus3disk.py read disk.img / write disk.img / verify disk.img
 ```
 
-On the +3: `CAT "b:"` shows `706K free`.
+On the +3: `CAT "b:"` shows the files; `LOAD "b:hello"` loads and runs the example.
 
-Put a BASIC program on it:
+A write always rewrites the whole disk, so `put` reads the disk first (and refuses to continue unless every
+track read cleanly), adds the files to that image, writes it with verify, then reads the disk back and compares
+byte for byte. About 8 minutes. `--from-image` skips the first read when you kept the image with `--keep-image`.
+
+The lower-level pieces, if you want them separately:
 
 ```
 cd diskdefs
@@ -38,8 +48,6 @@ cp ../plus3-blank-720k.img disk.img
 cpmcp -f plus3-720k -T raw disk.img HELLO 0:HELLO
 ../tools/write-disk.sh disk.img
 ```
-
-On the +3: `LOAD "b:hello"` loads and runs it.
 
 Image an unknown disk and recover its files:
 
@@ -56,6 +64,7 @@ cd diskdefs && cpmls -f cpcsys -T raw ../out-side0.raw        # cpcsys / cpcdata
 | --- | --- |
 | `setup.sh` | Recreates the toolchain: upstream clone at commit `2cbbfd1`, patches, build, Greaseweazle venv, blank images |
 | `patches/` | Three patches to the DrawBridge host tool (below). Applied by `setup.sh` |
+| `tools/plus3disk.py` | The everyday command: format, ls, put, get, read, write, verify |
 | `tools/write-disk.sh` | Write an image with verify, then read back and compare |
 | `tools/verify-disk.sh` | Read back and compare only |
 | `tools/read-disk.sh` | Capture N flux passes of a disk |
