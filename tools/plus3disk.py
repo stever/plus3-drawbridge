@@ -118,46 +118,50 @@ def write_disk(port, img):
         except OSError: pass
         p.kill(); p.wait()
         die(msg + "\n  last output:\n  " + "\n  ".join(tail[-8:]))
-    while True:
-        if time.time() - t0 > 1800:
-            abort("write took more than 30 minutes")
-        r, _, _ = select.select([p.stdout], [], [], 5.0)
-        if not r:
-            if p.poll() is not None: break
-            continue
-        chunk = p.stdout.read1(4096) if hasattr(p.stdout, "read1") else os.read(p.stdout.fileno(), 4096)
-        if not chunk:
-            break
-        buf += chunk
-        while True:
-            m = re.search(rb"[\r\n]", buf)
-            if m:
-                line, buf = buf[:m.start()].decode("latin-1"), buf[m.end():]
-            elif buf.endswith(b"? ") or buf.endswith(b": "):     # a prompt waiting for a key
-                line, buf = buf.decode("latin-1"), b""
-            else:
-                break
-            if not line.strip():
-                continue
-            tail = (tail + [line])[-40:]
-            if "File written to disk" in line:
-                done = True
-            if "verify error" in line and "[R]etry" in line:
-                prompts += 1
-                now = time.time()
-                if now - t_last < 0.5 or prompts > 6 * ntracks:
-                    abort("the board stopped responding during the write")
-                t_last = now
-                mt = re.search(r"track (\d+), (\w+) side", line)
-                key = (mt.group(1), mt.group(2)) if mt else ("?", "?")
-                retries[key] = retries.get(key, 0) + 1
-                if retries[key] <= 5:
-                    ans = b"R"
-                else:
-                    ans = b"I"                                   # I = skip (S is shown but acts as retry)
-                    failed.append(key)
-                    print(f"  track {key[0]} {key[1]} side: giving up after 5 retries", flush=True)
-                p.stdin.write(ans); p.stdin.flush()
+    try:
+      while True:
+          if time.time() - t0 > 1800:
+              abort("write took more than 30 minutes")
+          r, _, _ = select.select([p.stdout], [], [], 5.0)
+          if not r:
+              if p.poll() is not None: break
+              continue
+          chunk = p.stdout.read1(4096) if hasattr(p.stdout, "read1") else os.read(p.stdout.fileno(), 4096)
+          if not chunk:
+              break
+          buf += chunk
+          while True:
+              m = re.search(rb"[\r\n]", buf)
+              if m:
+                  line, buf = buf[:m.start()].decode("latin-1"), buf[m.end():]
+              elif buf.endswith(b"? ") or buf.endswith(b": "):     # a prompt waiting for a key
+                  line, buf = buf.decode("latin-1"), b""
+              else:
+                  break
+              if not line.strip():
+                  continue
+              tail = (tail + [line])[-40:]
+              if "File written to disk" in line:
+                  done = True
+              if "verify error" in line and "[R]etry" in line:
+                  prompts += 1
+                  now = time.time()
+                  if now - t_last < 0.5 or prompts > 6 * ntracks:
+                      abort("the board stopped responding during the write")
+                  t_last = now
+                  mt = re.search(r"track (\d+), (\w+) side", line)
+                  key = (mt.group(1), mt.group(2)) if mt else ("?", "?")
+                  retries[key] = retries.get(key, 0) + 1
+                  if retries[key] <= 5:
+                      ans = b"R"
+                  else:
+                      ans = b"I"                                   # I = skip (S is shown but acts as retry)
+                      failed.append(key)
+                      print(f"  track {key[0]} {key[1]} side: giving up after 5 retries", flush=True)
+                  p.stdin.write(ans); p.stdin.flush()
+    except KeyboardInterrupt:
+        p.kill(); p.wait()
+        die("interrupted; the write is incomplete")
     p.wait()
     if failed:
         print(f"  {len(failed)} track(s) skipped; the read-back will show the damage")
