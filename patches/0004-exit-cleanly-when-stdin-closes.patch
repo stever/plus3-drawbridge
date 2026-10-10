@@ -1,0 +1,29 @@
+diff --git a/ArduinoFloppyReader/ArduinoFloppyReader/Main.cpp b/ArduinoFloppyReader/ArduinoFloppyReader/Main.cpp
+index 07d76f4..c0641ed 100644
+--- a/ArduinoFloppyReader/ArduinoFloppyReader/Main.cpp
++++ b/ArduinoFloppyReader/ArduinoFloppyReader/Main.cpp
+@@ -62,13 +62,22 @@ void resetTermios(void)
+   tcsetattr(0, TCSANOW, &old);
+ }
+ 
++extern ArduinoFloppyReader::ADFWriter writer;   // defined below; needed by _getChar
++
+ char _getChar() 
+ {
+-  char ch;
++  int ch;
+   initTermios(0);
+   ch = getchar();
+   resetTermios();
+-  return ch;
++  if (ch == EOF) {
++    // stdin closed (e.g. a script ran out of answers): every prompt loop would
++    // otherwise spin forever printing the prompt.  Stop the drive and leave.
++    printf("\nInput closed - aborting.\n");
++    writer.closeDevice();
++    exit(2);
++  }
++  return (char)ch;
+ }
+ 
+ std::wstring atw(const std::string& str) {

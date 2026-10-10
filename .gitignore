@@ -4,3 +4,4 @@ gwenv/
 *.img
 !examples/*
 __pycache__/
+work/

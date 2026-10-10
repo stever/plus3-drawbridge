@@ -97,16 +97,74 @@ def read_disk(port, tmp):
 
 
 def write_disk(port, img):
+    """Write img with the tool's own verify, answering its prompts as they come.
+
+    Output is streamed, never accumulated: the writer prints progress with
+    carriage returns and, on a dead board, can emit prompts at full speed.
+    Each track gets 5 retries (the tool itself tries 5 times before each
+    prompt), then it is skipped.  Prompts arriving faster than a drive can
+    physically fail, or many more prompts than tracks, mean the board is not
+    responding; the write is aborted and the process killed."""
+    import select, time
     size = next((k for k, v in SIZES.items() if v[1] == os.path.getsize(img)), None) or die("image is not 720K or 180K")
+    ntracks = 160 if size == "720" else 40
     print("writing disk (about 5 minutes) ...", flush=True)
-    p = subprocess.Popen([DB, port, img, "WRITE", "VERIFY"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-    out, _ = p.communicate("RRRRR" + "I" * 400)
-    out = out.replace("\r", "\n")
-    prompts = [l for l in out.splitlines() if "verify error" in l]
-    if prompts:
-        print(f"  {len(prompts)} verify prompts during write (tracks retried)")
-    if "File written to disk" not in out:
-        die("write did not complete:\n" + out[-800:])
+    p = subprocess.Popen([DB, port, img, "WRITE", "VERIFY"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, bufsize=0)
+    buf = b""; tail = []; retries = {}; prompts = 0; t_last = 0.0; done = False; failed = []
+    t0 = time.time()
+    def abort(msg):
+        try: p.stdin.write(b"A"); p.stdin.flush()
+        except OSError: pass
+        p.kill(); p.wait()
+        die(msg + "\n  last output:\n  " + "\n  ".join(tail[-8:]))
+    while True:
+        if time.time() - t0 > 1800:
+            abort("write took more than 30 minutes")
+        r, _, _ = select.select([p.stdout], [], [], 5.0)
+        if not r:
+            if p.poll() is not None: break
+            continue
+        chunk = p.stdout.read1(4096) if hasattr(p.stdout, "read1") else os.read(p.stdout.fileno(), 4096)
+        if not chunk:
+            break
+        buf += chunk
+        while True:
+            m = re.search(rb"[\r\n]", buf)
+            if m:
+                line, buf = buf[:m.start()].decode("latin-1"), buf[m.end():]
+            elif buf.endswith(b"? ") or buf.endswith(b": "):     # a prompt waiting for a key
+                line, buf = buf.decode("latin-1"), b""
+            else:
+                break
+            if not line.strip():
+                continue
+            tail = (tail + [line])[-40:]
+            if "File written to disk" in line:
+                done = True
+            if "verify error" in line and "[R]etry" in line:
+                prompts += 1
+                now = time.time()
+                if now - t_last < 0.5 or prompts > 6 * ntracks:
+                    abort("the board stopped responding during the write")
+                t_last = now
+                mt = re.search(r"track (\d+), (\w+) side", line)
+                key = (mt.group(1), mt.group(2)) if mt else ("?", "?")
+                retries[key] = retries.get(key, 0) + 1
+                if retries[key] <= 5:
+                    ans = b"R"
+                else:
+                    ans = b"I"                                   # I = skip (S is shown but acts as retry)
+                    failed.append(key)
+                    print(f"  track {key[0]} {key[1]} side: giving up after 5 retries", flush=True)
+                p.stdin.write(ans); p.stdin.flush()
+    p.wait()
+    if failed:
+        print(f"  {len(failed)} track(s) skipped; the read-back will show the damage")
+    elif prompts:
+        print(f"  {prompts} verify prompt(s) during write, all recovered by retrying")
+    if not done:
+        die("write did not complete\n  last output:\n  " + "\n  ".join(tail[-8:]))
     return size
 
 
@@ -157,7 +215,8 @@ def main():
             files.append(a)
     check_tools()
     port = find_port(opts.get("port"))
-    tmp = tempfile.mkdtemp(prefix="plus3disk-")
+    os.makedirs(os.path.join(ROOT, "work"), exist_ok=True)       # on disk, not /tmp (often RAM)
+    tmp = tempfile.mkdtemp(prefix="plus3disk-", dir=os.path.join(ROOT, "work"))
     try:
         if cmd == "format":
             size = opts.get("size", "720")

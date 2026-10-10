@@ -7,7 +7,7 @@ floppy drive (TEAC FD-05PUB mechanism).
 DrawBridge is Rob Smith's Amiga floppy reader/writer. It also reads any disk as
 raw flux and writes PC-style MFM tracks, which is what +3DOS and AMSDOS use. The
 stock host tool could not write a usable track on this board-and-drive
-combination; three small patches fix that. Everything here was proven on
+combination; four small patches fix that and a scripting hazard. Everything here was proven on
 2026-10-10 by formatting a 720K +3DOS disk from the PC, adding a BASIC program,
 and loading it on a real +3.
 
@@ -63,7 +63,7 @@ cd diskdefs && cpmls -f cpcsys -T raw ../out-side0.raw        # cpcsys / cpcdata
 | Path | What |
 | --- | --- |
 | `setup.sh` | Recreates the toolchain: upstream clone at commit `2cbbfd1`, patches, build, Greaseweazle venv, blank images |
-| `patches/` | Three patches to the DrawBridge host tool (below). Applied by `setup.sh` |
+| `patches/` | Four patches to the DrawBridge host tool (below). Applied by `setup.sh` |
 | `tools/plus3disk.py` | The everyday command: format, ls, put, get, read, write, verify |
 | `tools/write-disk.sh` | Write an image with verify, then read back and compare |
 | `tools/verify-disk.sh` | Read back and compare only |
@@ -83,6 +83,7 @@ Against upstream V2.8.9 (`RobSmithDev/ArduinoFloppyDiskReader` commit `2cbbfd1`)
 1. **Write each track immediately, not from the index pulse** (`lib/ADFWriter.cpp`, `sectorFileToDisk`). The index-wait path held the write gate open and sent no data on this hardware, so every track came out erased. The board's own diagnostic, which does not wait for index, wrote fine. 0 of 160 tracks good became 70.
 2. **Erase before write, precompensation off** (`Main.cpp`). A non-index write covers 98.5 percent of a revolution; without an erase the unwritten slice keeps old fragments that decode as broken sectors. 70 became 139. Precompensation was off while isolating the fault and the inner cylinders are perfect without it.
 3. **Diagnostic treats a disk-change failure as a warning.** This mechanism never delivers disk-change to the board; unpatched, the diagnostic aborts before its read and write tests.
+4. **Exit cleanly when stdin closes.** Every interactive prompt loops until it gets an acceptable key; at end-of-file it spins forever printing the prompt. A script that runs out of answers then floods its log or, if the output is captured, the machine's RAM. The tool now stops the drive and exits with status 2.
 
 The last step to 160 of 160 was not software: high-density media must have the density hole covered for double-density writes on this drive.
 

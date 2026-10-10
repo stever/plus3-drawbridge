@@ -57,20 +57,21 @@ The only files that matter are in `plus3-tools`:
 | `merge_cpc.py` | Merges good sectors from several flux passes of a CPC disk into per-side images |
 | `files/HELLO` | The test program, with its +3DOS header |
 
-## The four patches to the DrawBridge tool
+## The five changes to the DrawBridge tool
 
-All are in `drawbridge-patches.diff`, 50 lines against upstream V2.8.9. They touch only the host program, never the board firmware.
+All are in the repository's `patches/` directory, against upstream V2.8.9. They touch only the host program, never the board firmware.
 
 | Patch | Where | Why |
 | --- | --- | --- |
 | Write each track immediately, not from the index pulse | `lib/ADFWriter.cpp`, `sectorFileToDisk`, the `writeCurrentTrackPrecomp` call | The index-wait path erased every track and wrote no data on this board and drive. The diagnostic's own write test, which does not wait for index, passed. Result went from 0 of 160 tracks to 70 |
 | Erase each track before writing it | `Main.cpp`, fifth argument of `sectorFileToDisk` set to `true` | A non-index write covers about 98.5 percent of a revolution. Without an erase, the remaining slice keeps fragments of earlier writes, which read back as spurious broken sectors. Result went from 70 to 139 of 160 |
 | Write precompensation off | `Main.cpp`, fourth argument of `sectorFileToDisk` set to `false` | Precompensation applied from cylinder 40 inward. Disabled while isolating the fault; inner cylinders are perfect without it, so it stayed off |
+| Exit cleanly when stdin closes | `Main.cpp`, `_getChar` | At end-of-file every prompt loop spun forever printing the prompt; a script that ran out of answers filled RAM. Now stops the drive and exits with status 2 |
 | Disk-change failure in the diagnostic is a warning | `lib/ADFWriter.cpp`, `runDiagnostics`, two `return false` lines removed | This mechanism never delivers disk-change to the board. Unpatched, the diagnostic aborts before the read and write tests, which are the useful ones |
 
 Two things in the stock tool that are not bugs but will bite:
 
-- At a write-verify prompt the choices are shown as R, S and A, but S is not handled and acts as retry. The key that actually skips a track is I. A script answering S loops forever and, if its output goes to a file, fills the disk.
+- At a write-verify prompt the choices are shown as R, S and A, but S is not handled and acts as retry. The key that actually skips a track is I. Never feed the tool a finite string of answers and capture its output: `plus3disk` answers each prompt as it arrives and rate-limits.
 - Progress lines are written with carriage returns and no newline, and are buffered when not on a terminal. Pipe through `tr '\r' '\n'` and use `stdbuf -o0` when logging.
 
 ## Media rules
