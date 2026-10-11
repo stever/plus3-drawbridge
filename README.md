@@ -29,13 +29,28 @@ tools/plus3disk.py ls                                  # catalogue
 tools/plus3disk.py put examples/hello.bas --basic --line 10 --as HELLO   # tokenise, add header, copy on
 tools/plus3disk.py put data.txt program.bin            # plain files, no header
 tools/plus3disk.py put game.bin --code --addr 32768    # CODE block with a +3DOS header
-tools/plus3disk.py get HELLO --to out/                 # copy off
+tools/plus3disk.py put game.tap --tap                  # tape image to disk: one file per block, loader patched
+tools/plus3disk.py get HELLO --to out/ --strip         # copy off; --strip drops the 128-byte header
+tools/plus3disk.py cat README.TXT                      # print a file
+tools/plus3disk.py rm HELLO / mv OLD NEW               # delete, rename
 tools/plus3disk.py read disk.img / write disk.img / verify disk.img
 ```
 
+`ls` reads the +3DOS header of each file, so it shows what the +3 would: `BASIC  LINE 10`, `CODE 32768,6912`,
+`DATA a$()` or `plain`, and the free space as CAT reports it. Add `--image disk.img` to any of ls, get, cat, put,
+rm or mv to work on an image file instead of the drive: nothing is read or written on the floppy, and put/rm/mv
+change the image in place. That is how to prepare a disk offline and write it once with `write`.
+
+`put --tap` handles the common tape layout: a BASIC loader followed by headed SCREEN$ and CODE blocks. Each block
+becomes a disk file named from its tape name, and every `LOAD ""` in the loader is rewritten to name the next
+block, since an empty name means nothing to a disk drive. Several tapes fit on one disk; names are kept unique.
+On the +3: `LOAD "b:"` to make the 3.5" drive the default, then `LOAD "dandare"`. Tapes with headerless blocks or
+their own machine-code loaders (Speedlock and friends) cannot be converted this way; those blocks are skipped
+with a warning.
+
 On the +3: `CAT "b:"` shows the files; `LOAD "b:hello"` loads and runs the example.
 
-A write always rewrites the whole disk, so `put` reads the disk first (and refuses to continue unless every
+A write always rewrites the whole disk, so `put` (and `rm`, `mv`) reads the disk first (and refuses to continue unless every
 track read cleanly), adds the files to that image, writes it with verify, then reads the disk back and compares
 byte for byte. About 8 minutes. `--from-image` skips the first read when you kept the image with `--keep-image`.
 
@@ -64,7 +79,8 @@ cd diskdefs && cpmls -f cpcsys -T raw ../out-side0.raw        # cpcsys / cpcdata
 | --- | --- |
 | `setup.sh` | Recreates the toolchain: upstream clone at commit `2cbbfd1`, patches, build, Greaseweazle venv, blank images |
 | `patches/` | Four patches to the DrawBridge host tool (below). Applied by `setup.sh` |
-| `tools/plus3disk.py` | The everyday command: format, ls, put, get, read, write, verify |
+| `tools/plus3disk.py` | The everyday command: format, ls, put, get, cat, rm, mv, read, write, verify |
+| `tools/tap2plus3.py` | Split a TAP tape image into +3DOS files, headers built from the tape headers |
 | `tools/write-disk.sh` | Write an image with verify, then read back and compare |
 | `tools/verify-disk.sh` | Read back and compare only |
 | `tools/read-disk.sh` | Capture N flux passes of a disk |

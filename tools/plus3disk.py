@@ -2,19 +2,25 @@
 """plus3disk - work with +3DOS floppies through a DrawBridge.
 
   plus3disk format [--size 720|180]            blank +3DOS disk (720K double sided by default)
-  plus3disk ls                                 list the files on the disk
+  plus3disk ls                                 catalogue: name, size, +3DOS header type, free space
   plus3disk put FILE... [--basic [--line N]]   copy files onto the disk
                         [--code --addr A]
-                        [--as NAME]            name on disk for a single file (8.3, upper case)
+                        [--tap]                FILE is a .tap tape image: one disk file per block, loader patched
+                        [--as NAME]            name on disk for a single file, or a tape's loader (8.3, upper case)
                         [--from-image IMG]     use this verified image instead of reading the disk first
-  plus3disk get NAME... [--to DIR]             copy files off the disk (header kept; strip with plus3hdr.py)
+  plus3disk get NAME... [--to DIR] [--strip]   copy files off the disk (--strip drops the +3DOS header)
+  plus3disk cat NAME                           print a file (header dropped) to stdout
+  plus3disk rm NAME...                         delete files
+  plus3disk mv OLD NEW                         rename a file
   plus3disk read IMG                           read the disk into a sector image
   plus3disk write IMG                          write a sector image to the disk, then verify
   plus3disk verify IMG                         read the disk back and compare with IMG
 
 Options: --port /dev/ttyUSB0   --keep-image PATH (save the final verified image)
+         --image IMG   work on this image file instead of the drive: ls, get and cat read it,
+                       put, rm and mv change it in place.  No drive needed.
 
-A write always rewrites the whole disk, so put/format take about 8 minutes:
+A write always rewrites the whole disk, so put/rm/mv/format take about 8 minutes:
 read 1.5 min, write 5 min with verify, read back 1.5 min.  Nothing is written
 unless the disk read back cleanly first, and the result is always read back
 and compared byte for byte.  High-density disks: tape the density hole.
@@ -33,6 +39,9 @@ DB = os.path.join(ROOT, "vendor/ArduinoFloppyDiskReader/ArduinoFloppyReader/Ardu
 GW = os.path.join(ROOT, "gwenv/bin/gw")
 DISKDEFS = os.path.join(ROOT, "diskdefs")
 SIZES = {"720": ("plus3-720k", 737280, "ibm.720"), "180": ("plus3-180k", 184320, "ibm.180")}
+# cpmtools diskdef values, needed to walk the directory ourselves: (boot track bytes, block size, directory entries)
+GEOM = {"720": (9 * 512, 2048, 256), "180": (9 * 512, 1024, 64)}
+TYPES = {0: "BASIC", 1: "DATA", 2: "DATA", 3: "CODE"}
 
 
 def die(msg):
@@ -58,9 +67,6 @@ def check_tools():
     for p, hint in ((DB, "run ./setup.sh"), (GW, "run ./setup.sh")):
         if not os.access(p, os.X_OK):
             die(f"{p} missing; {hint}")
-    for t in ("cpmls", "cpmcp"):
-        if not shutil.which(t):
-            die(f"{t} missing; install cpmtools")
 
 
 def drawbridge(port, *args):
@@ -75,7 +81,10 @@ def read_disk(port, tmp):
     """Read the disk; return (image path, size key). Dies unless every track decoded."""
     print("reading disk ...", flush=True)
     scp = os.path.join(tmp, "rb.scp")
-    drawbridge(port, scp, "READ")
+    out = drawbridge(port, scp, "READ")
+    if "Error" in out or not os.path.exists(scp) or os.path.getsize(scp) < 1_000_000:
+        last = [l for l in out.splitlines() if l.strip()][-3:]
+        die("the disk did not read (no disk in the drive, or not seated?)\n  " + "\n  ".join(last))
     img = os.path.join(tmp, "rb.img")
     r = run([GW, "convert", "--format=ibm.720", scp, img])
     log = r.stdout + r.stderr
@@ -91,6 +100,7 @@ def read_disk(port, tmp):
         tracks = [l for l in log.splitlines() if re.match(r"T[0-9]+\.[01]: IBM", l)]
     bad = [l.split(" from")[0] for l in tracks if "9/9 sectors" not in l]
     print(f"  {len(tracks) - len(bad)} of {len(tracks)} tracks read cleanly")
+    tracks or die("no tracks decoded from the flux read")
     if bad:
         die("disk did not read cleanly, refusing to continue:\n  " + "\n  ".join(bad))
     return img, size
@@ -106,7 +116,7 @@ def write_disk(port, img):
     physically fail, or many more prompts than tracks, mean the board is not
     responding; the write is aborted and the process killed."""
     import select, time
-    size = next((k for k, v in SIZES.items() if v[1] == os.path.getsize(img)), None) or die("image is not 720K or 180K")
+    size = image_size(img)
     ntracks = 160 if size == "720" else 40
     print("writing disk (about 5 minutes) ...", flush=True)
     p = subprocess.Popen([DB, port, img, "WRITE", "VERIFY"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -187,6 +197,72 @@ def cpm(cmd, fmt, img, *args):
     return r.stdout
 
 
+def image_size(img):
+    return next((k for k, v in SIZES.items() if v[1] == os.path.getsize(img)), None) or die("image is not 720K or 180K")
+
+
+def catalogue(img, size):
+    """Walk the CP/M directory: return ([(name, bytes, description)], free K) as the +3's CAT shows them."""
+    data = open(img, "rb").read()
+    boot, bsize, maxdir = GEOM[size]
+    nblocks = (len(data) - boot) // bsize                 # blocks 0.. are counted from the directory
+    wide = nblocks > 256                                  # 2-byte block pointers on the 720K disk
+    dirblocks = maxdir * 32 // bsize
+    files, used = {}, set()
+    for e in range(maxdir):
+        ent = data[boot + e * 32: boot + e * 32 + 32]
+        if ent[0] > 15:                                   # 0xE5 free, 0x21+ labels, passwords, timestamps
+            continue
+        name = (bytes(b & 0x7F for b in ent[1:9]).decode("latin-1").rstrip()
+                + "." + bytes(b & 0x7F for b in ent[9:12]).decode("latin-1").rstrip()).rstrip(".")
+        extent = (ent[14] << 5) | (ent[12] & 0x1F)
+        ptrs = [int.from_bytes(ent[16 + 2 * i: 18 + 2 * i], "little") for i in range(8)] if wide else list(ent[16:32])
+        ptrs = [b for b in ptrs if b]
+        used.update(ptrs)
+        f = files.setdefault(name, {"first": None, "records": 0, "lastlen": 0})
+        if extent == 0 and ptrs:
+            f["first"] = ptrs[0]
+        if extent * 128 + ent[15] > f["records"]:
+            f["records"] = extent * 128 + ent[15]
+            f["lastlen"] = ent[13] & 0x7F                  # CP/M 3 byte count of the last record, if set
+    out = []
+    for name in sorted(files):
+        f = files[name]
+        size_b = f["records"] * 128 - (128 - f["lastlen"] if f["lastlen"] and f["records"] else 0)
+        desc = "plain"
+        if f["first"] is not None:
+            h = data[boot + f["first"] * bsize: boot + f["first"] * bsize + 128]
+            if h[:8] == b"PLUS3DOS" and sum(h[:127]) & 0xFF == h[127]:
+                length = int.from_bytes(h[16:18], "little")
+                p1, p2 = int.from_bytes(h[18:20], "little"), int.from_bytes(h[20:22], "little")
+                size_b = int.from_bytes(h[11:15], "little")
+                t = h[15]
+                if t == 0:
+                    desc = "BASIC" + (f"  LINE {p1}" if p1 < 0x8000 else "")
+                elif t == 3:
+                    desc = f"CODE   {p1},{length}"
+                elif t in (1, 2):
+                    desc = "DATA   " + chr((h[19] & 0x1F) + 0x60) + ("$" if t == 2 else "") + "()"
+                else:
+                    desc = f"type {t}"
+        out.append((name, size_b, desc))
+    free_k = (nblocks - dirblocks - len(used)) * bsize // 1024
+    return out, free_k
+
+
+def print_catalogue(img, size):
+    files, free_k = catalogue(img, size)
+    for name, size_b, desc in files:
+        print(f"  {name:<12} {size_b:>7}  {desc}")
+    print(f"  {len(files)} file(s), {free_k}K free")
+
+
+def strip_header(data):
+    if data[:8] == b"PLUS3DOS" and sum(data[:127]) & 0xFF == data[127]:
+        return data[128:]
+    return data
+
+
 def disk_name(path, override):
     if override:
         return override.upper()
@@ -203,8 +279,8 @@ def main():
         sys.exit(__doc__)
     cmd, args = args[0], args[1:]
     opts, files = {}, []
-    flags = {"basic", "code"}
-    valued = {"size", "line", "addr", "as", "from-image", "to", "port", "keep-image"}
+    flags = {"basic", "code", "tap", "strip"}
+    valued = {"size", "line", "addr", "as", "from-image", "to", "port", "keep-image", "image"}
     while args:
         a = args.pop(0)
         if a.startswith("--"):
@@ -217,10 +293,42 @@ def main():
                 die(f"unknown option {a}")
         else:
             files.append(a)
-    check_tools()
-    port = find_port(opts.get("port"))
+    for t in ("cpmls", "cpmcp", "cpmrm"):
+        shutil.which(t) or die(f"{t} missing; install cpmtools")
+    offline = opts.get("image")                                  # work on a file, never touch the drive
+    if offline:
+        os.path.isfile(offline) or die(f"{offline}: no such image")
+        offline = os.path.abspath(offline)
+        cmd in ("ls", "get", "cat", "put", "rm", "mv") or die(f"--image does not apply to {cmd}")
+    else:
+        check_tools()
+        port = find_port(opts.get("port"))
     os.makedirs(os.path.join(ROOT, "work"), exist_ok=True)       # on disk, not /tmp (often RAM)
     tmp = tempfile.mkdtemp(prefix="plus3disk-", dir=os.path.join(ROOT, "work"))
+
+    def load():
+        """The disk image to work on: the --image file, the --from-image file, or a fresh read of the disk."""
+        if offline:
+            return offline, image_size(offline)
+        if opts.get("from-image"):
+            img = os.path.join(tmp, "disk.img")
+            shutil.copy(opts["from-image"], img)
+            return img, image_size(img)
+        return read_disk(port, tmp)
+
+    def commit(img, size):
+        """Put a changed image back: onto the disk with verify, or over the --image file."""
+        if offline:
+            print(f"updated {offline}")
+            return
+        write_disk(port, img)
+        verify_disk(port, img, tmp)
+
+    def must_exist(img, size, names):
+        have = {n for n, _, _ in catalogue(img, size)[0]}
+        missing = [n for n in names if n not in have]
+        missing and die(f"not on the disk: {' '.join(missing)}")
+
     try:
         if cmd == "format":
             size = opts.get("size", "720")
@@ -231,20 +339,33 @@ def main():
             verify_disk(port, img, tmp)
             final = img
         elif cmd == "ls":
-            img, size = read_disk(port, tmp)
-            print(cpm("ls", SIZES[size][0], img, "-F").rstrip())
+            img, size = load()
+            print_catalogue(img, size)
             final = img
         elif cmd == "put":
             files or die("put needs at least one file")
             if "as" in opts and len(files) > 1:
                 die("--as only works with a single file")
-            if opts.get("from-image"):
-                img = os.path.join(tmp, "disk.img")
-                shutil.copy(opts["from-image"], img)
-                size = next((k for k, v in SIZES.items() if v[1] == os.path.getsize(img)), None) or die("image is not 720K or 180K")
-            else:
-                img, size = read_disk(port, tmp)
+            img, size = load()
+            if offline:
+                img = os.path.join(tmp, "disk.img"); shutil.copy(offline, img)
             fmt = SIZES[size][0]
+            if opts.get("tap"):
+                tapfiles = []
+                for f in files:
+                    outdir = os.path.join(tmp, "tap_" + re.sub(r"[^A-Za-z0-9]", "_", os.path.basename(f)))
+                    taken = {n for n, _, _ in catalogue(img, size)[0]} | {os.path.basename(t) for t in tapfiles}
+                    r = run([sys.executable, os.path.join(HERE, "tap2plus3.py"), "--avoid", ",".join(sorted(taken)), f, outdir])
+                    r.returncode == 0 or die(r.stderr.strip() or r.stdout.strip())
+                    sys.stderr.write(r.stderr)
+                    tapfiles += [os.path.join(outdir, l.split()[0]) for l in r.stdout.splitlines() if l.strip()]
+                if "as" in opts:                               # --as names the loader; the other blocks keep theirs
+                    len(files) == 1 or die("--as only works with a single tape")
+                    new = os.path.join(os.path.dirname(tapfiles[0]), opts["as"].upper())
+                    os.rename(tapfiles[0], new)
+                    tapfiles[0] = new
+                    del opts["as"]
+                files = tapfiles
             for f in files:
                 src = f
                 if opts.get("basic"):
@@ -260,20 +381,83 @@ def main():
                     r = run([sys.executable, os.path.join(HERE, "plus3hdr.py"), "code", "--addr", opts["addr"], f, src])
                     r.returncode == 0 or die(r.stderr or r.stdout)
                 name = disk_name(f, opts.get("as"))
-                cpm("cp", fmt, img, src, f"0:{name}")
-                print(f"  added {name} ({os.path.getsize(src)} bytes)")
-            print(cpm("ls", fmt, img).rstrip())
-            write_disk(port, img)
-            verify_disk(port, img, tmp)
+                verb = "added"
+                if name in {n for n, _, _ in catalogue(img, size)[0]}:
+                    cpm("rm", fmt, img, f"0:{name}")              # replace, as SAVE does on the +3
+                    verb = "replaced"
+                cpm("cp", fmt, img, os.path.abspath(src), f"0:{name}")
+                print(f"  {verb} {name} ({os.path.getsize(src)} bytes)")
+            print_catalogue(img, size)
+            if offline:
+                shutil.copy(img, offline)
+            commit(img, size)
             final = img
         elif cmd == "get":
             files or die("get needs at least one name")
-            img, size = read_disk(port, tmp)
-            dest = opts.get("to", ".")
+            img, size = load()
+            names = [n.upper() for n in files]
+            must_exist(img, size, names)
+            dest = os.path.abspath(opts.get("to", "."))
             os.makedirs(dest, exist_ok=True)
-            for n in files:
-                cpm("cp", SIZES[size][0], img, f"0:{n.upper()}", dest)
-                print(f"  copied {n.upper()} to {dest}")
+            for n in names:
+                cpm("cp", SIZES[size][0], img, f"0:{n}", dest)
+                path = os.path.join(dest, n.lower())             # cpmcp writes lower-case names
+                if not os.path.exists(path):
+                    path = os.path.join(dest, n)
+                if opts.get("strip"):
+                    data = open(path, "rb").read()
+                    stripped = strip_header(data)
+                    open(path, "wb").write(stripped)
+                    print(f"  copied {n} to {path}" + (" (header stripped)" if len(stripped) != len(data) else " (no header)"))
+                else:
+                    print(f"  copied {n} to {path}")
+            final = img
+        elif cmd == "cat":
+            len(files) == 1 or die("cat needs exactly one name")
+            img, size = load()
+            n = files[0].upper()
+            must_exist(img, size, [n])
+            out = os.path.join(tmp, "out"); os.makedirs(out)
+            cpm("cp", SIZES[size][0], img, f"0:{n}", out)
+            path = os.path.join(out, os.listdir(out)[0])
+            sys.stdout.buffer.write(strip_header(open(path, "rb").read()))
+            sys.stdout.flush()
+            final = img
+        elif cmd == "rm":
+            files or die("rm needs at least one name")
+            img, size = load()
+            if offline:
+                img = os.path.join(tmp, "disk.img"); shutil.copy(offline, img)
+            names = [n.upper() for n in files]
+            must_exist(img, size, names)
+            for n in names:
+                cpm("rm", SIZES[size][0], img, f"0:{n}")
+                print(f"  deleted {n}")
+            print_catalogue(img, size)
+            if offline:
+                shutil.copy(img, offline)
+            commit(img, size)
+            final = img
+        elif cmd == "mv":
+            len(files) == 2 or die("mv needs OLD NEW")
+            img, size = load()
+            if offline:
+                img = os.path.join(tmp, "disk.img"); shutil.copy(offline, img)
+            old, new = files[0].upper(), disk_name(files[1], None)
+            must_exist(img, size, [old])
+            have = {n for n, _, _ in catalogue(img, size)[0]}
+            new in have and die(f"{new} already exists")
+            fmt = SIZES[size][0]
+            out = os.path.join(tmp, "out"); os.makedirs(out)
+            cpm("cp", fmt, img, f"0:{old}", out)                 # cpmtools has no rename: copy out, delete, copy in
+            path = os.path.join(out, os.listdir(out)[0])
+            cpm("rm", fmt, img, f"0:{old}")
+            cpm("cp", fmt, img, path, f"0:{new}")
+            print(f"  renamed {old} to {new}")
+            print_catalogue(img, size)
+            if offline:
+                shutil.copy(img, offline)
+            commit(img, size)
             final = img
         elif cmd == "read":
             files or die("read needs an output image path")

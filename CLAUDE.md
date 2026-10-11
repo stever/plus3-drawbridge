@@ -12,9 +12,14 @@ needs that those do not say.
 - Toolchain is built in this checkout: `vendor/ArduinoFloppyDiskReader` (upstream at
   commit 2cbbfd1 with the four patches in `patches/`), `gwenv/` (Greaseweazle decoder).
   `./setup.sh` rebuilds it all and is idempotent.
-- `tools/plus3disk.py` is the everyday command (format, ls, put, get, read, write,
-  verify). Both `format` and `put` were proven on hardware: 160/160 tracks, byte-exact
+- `tools/plus3disk.py` is the everyday command (format, ls, put, get, cat, rm, mv, read,
+  write, verify). `format` and `put` were proven on hardware: 160/160 tracks, byte-exact
   read-back. Pushed to https://github.com/stever/plus3-drawbridge (public).
+- Added 2026-10-10 afternoon, tested only against image files (`--image`), not yet on
+  the drive: `rm`, `mv`, `cat`, `get --strip`, `put --tap` (via `tools/tap2plus3.py`),
+  `--image IMG` offline mode, and `ls` rewritten to parse the CP/M directory itself
+  (shows +3DOS header type and free space; the old `cpmls -F` printed "No files found").
+  The drive paths these use (read_disk, write_disk, verify_disk) are unchanged.
 - Live write-up doc: https://claude.ai/code/artifact/e0744422-7411-44c3-b2e5-f6b2845354c1
 
 ## Disks (the user labels them)
@@ -24,22 +29,17 @@ needs that those do not say.
   Formatting it retries endlessly; retired.
 - B: 720K +3DOS, HELLO on it, works on the real +3 (CAT shows 706K free, LOAD "b:hello"
   runs). Written by the same patched writer as C.
-- C: 720K +3DOS with HELLO, verified 160/160 here twice, but the +3 says
-  "Drive B: track 0 sector 0 Missing address mark". OPEN PROBLEM, see below.
+- C: 720K +3DOS holding Dan Dare, Rebel Planet and zxdesk (the user's own program)
+  imported from TAP: 12 files, image `work/diskC-taps2.img`, written and verified
+  160/160 on 2026-10-10. On the +3: `LOAD "b:"` (does not survive a reset) then
+  `LOAD "dandare"` / `LOAD "rebel"` / `LOAD "zxdesk"`. zxdesk's COUNTER, WATCH and
+  TALLY blocks are on the disk but zxdesk loads them itself, presumably from tape.
+  Idea: `--drive b` to bake `b:` into patched loaders so one LOAD does it. An earlier
+  "Missing address mark" on C came from a crashed session, not the media.
+- A read that fails at track 0 with "error running the ReadTrackStream command" means
+  no disk in the drive. plus3disk now stops on that instead of continuing.
 - All the user's disks are HD media. Density hole must be taped, both sides, opaque,
   for DD writes on this drive; hole open gave weak outer cylinders 0-26.
-
-## Open problem: disk C unreadable on the +3
-
-This drive reads C perfectly; the +3's drive finds no sector header on track 0.
-Candidates, in order: C's tape not fully blocking the +3 drive's sensor (so it reads in
-HD mode); C's media holding a DD recording too weakly for a drive other than the one
-that wrote it; a weaker first write. Planned next steps, none done yet:
-1. verify C here again against `work/diskC-hello.img`;
-2. measure flux timing spread (how tightly intervals cluster at 4/6/8 us) on C vs B as
-   read here, as a signal-quality comparison;
-3. ask what the +3's 3.5" drive is (PC HD mechanism with hole sensor, or true DD);
-4. retape or rewrite C, else retire it.
 
 ## Conventions and hazards
 
@@ -62,9 +62,14 @@ that wrote it; a weaker first write. Planned next steps, none done yet:
 
 ## Ideas not started
 
-- `plus3disk rm` / `mv` (cpmrm, cpmcp round trip; trivial).
-- TAP to +3DOS import (each TAP block carries the header fields needed): the most
-  useful next feature, ~1 hour.
+- `put --tap` patches `LOAD ""` in the loader to the next block's disk name (tape order)
+  and keeps names unique across the disk (`--avoid`). First real test: Dan Dare and
+  Rebel Planet from `~/Downloads/ZX Spectrum +3/z80to/` onto disk C, image kept at
+  `work/diskC-taps.img`. Check the outcome on the +3: `LOAD "b:"` then `LOAD "dandare"`.
+  TAPs with headerless blocks or custom loaders are out of scope.
+- Prove rm/mv/cat on the drive.
+- A BASIC detokeniser (`get` as a .bas listing); the tokeniser table in `bas2plus3.py`
+  is the reverse map.
 - Amiga ADF writes from this unit are untested; the ADF path also waits for the index
   pulse by default (`Main.cpp`, `ADFToDisk` sixth argument).
 - Report the index-wait failure upstream to Rob Smith with `patches/0001`.
